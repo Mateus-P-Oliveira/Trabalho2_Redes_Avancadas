@@ -31,6 +31,11 @@ etherStatsColumns = {
     "5": "broadcast_packets"
 }
 
+etherHistoryColumns = {
+    "1": "timestamp",  # Timestamp do snapshot
+    "2": "data"        # Dados do snapshot (resumido como JSON string)
+}
+
 # Função para processar pacotes capturados
 def process_packet(packet):
     global etherStatsTable
@@ -101,7 +106,38 @@ def handle_snmp_request(command, oid):
                 first_oid = f"{BASE_OID}.1.1.1.1.1"
                 first_mac = mac_list[0]
                 return first_oid, "integer", etherStatsTable[first_mac][etherStatsColumns["1"]]
-        return None
+            
+        #return None
+        if oid.startswith(BASE_OID + ".2.2.1"):  # etherHistoryTable
+            parts = oid.split(".")
+            if len(parts) > len(BASE_OID.split(".")) + 2:  # Verifica índice e coluna
+                column = parts[-2]
+                index = int(parts[-1]) - 1  # O índice SNMP começa em 1
+                if column in etherHistoryColumns and 0 <= index < len(etherHistoryTable):
+                    history_entry = etherHistoryTable[index]
+                    if command == "GET":
+                        if column == "2":  # Dados do snapshot como JSON string
+                            return "string", json.dumps(history_entry["data"])
+                        else:
+                            return "integer", int(history_entry["timestamp"])
+                    elif command == "GET-NEXT":
+                        next_index = index + 1
+                        if next_index < len(etherHistoryTable):
+                            next_oid = f"{BASE_OID}.2.2.1.{column}.{next_index + 1}"
+                            next_entry = etherHistoryTable[next_index]
+                            if column == "2":
+                                return next_oid, "string", json.dumps(next_entry["data"])
+                            else:
+                                return next_oid, "integer", int(next_entry["timestamp"])
+                        else:
+                            return None
+            elif command == "GET-NEXT":  # Se não for um OID completo, retorna o primeiro
+                if etherHistoryTable:  # Verifica se o histórico tem entradas
+                    first_oid = f"{BASE_OID}.2.2.1.1.1"
+                    first_entry = etherHistoryTable[0]
+                    return first_oid, "integer", int(first_entry["timestamp"])
+            return None
+        
 
 # Função para responder a comandos do método pass_persist
 def pass_persist_handler():
