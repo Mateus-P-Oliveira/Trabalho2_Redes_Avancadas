@@ -1,0 +1,39 @@
+
+MYMIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    OBJECT-GROUP FROM SNMPv2-CONF
+    OBJECT-TYPE, experimental FROM SNMPv2-SMI
+    DisplayString FROM SNMPv2-TC;
+
+myMIB MODULE-IDENTITY
+    LAST-UPDATED "202406290000Z"
+    ORGANIZATION "PUCRS"
+    CONTACT-INFO "admin@localhost"
+    DESCRIPTION "My MIB"
+::= { experimental 1234 }
+
+myObjects OBJECT IDENTIFIER ::= { myMIB 1 }
+
+myCurrentDateTime OBJECT-TYPE
+    SYNTAX DisplayString
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Current Date and Time"
+    ::= { myObjects 1 }
+
+myHostname OBJECT-TYPE
+    SYNTAX DisplayString
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Hostname"
+    ::= { myObjects 2 }
+
+myFileContent OBJECT-TYPE
+    SYNTAX DisplayString
+    MAX-ACCESS read-write
+    STATUS current
+    DESCRIPTION "File Content"
+    ::= { myObjects 3 }
+
+END
