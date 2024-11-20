@@ -47,16 +47,24 @@ def process_packet(packet):
             etherStatsTable[src_mac] = {
                 'total_packets': 0, 'total_bytes': 0,
                 'unicast_packets': 0, 'multicast_packets': 0,
-                'broadcast_packets': 0, 'errors': 0
+                'broadcast_packets': 0, 'errors': 0,
+                'manual_update': {}  # Inicializa para rastrear alterações manuais
             }
-        etherStatsTable[src_mac]['total_packets'] += 1
-        etherStatsTable[src_mac]['total_bytes'] += packet_size
 
-        if packet.haslayer('IP'):
+        # Atualizar total_packets se não estiver marcado como manual
+        if not etherStatsTable[src_mac]['manual_update'].get('total_packets', False):
+            etherStatsTable[src_mac]['total_packets'] += 1
+        
+        # Atualizar total_bytes se não estiver marcado como manual
+        if not etherStatsTable[src_mac]['manual_update'].get('total_bytes', False):
+            etherStatsTable[src_mac]['total_bytes'] += packet_size
+
+        # Atualizar contadores baseados no tipo de pacote
+        if packet.haslayer('IP') and not etherStatsTable[src_mac]['manual_update'].get('unicast_packets', False):
             etherStatsTable[src_mac]['unicast_packets'] += 1
-        elif packet.dst == "ff:ff:ff:ff:ff:ff":
+        elif packet.dst == "ff:ff:ff:ff:ff:ff" and not etherStatsTable[src_mac]['manual_update'].get('broadcast_packets', False):
             etherStatsTable[src_mac]['broadcast_packets'] += 1
-        else:
+        elif not etherStatsTable[src_mac]['manual_update'].get('multicast_packets', False):
             etherStatsTable[src_mac]['multicast_packets'] += 1
 
 # Função para capturar pacotes na interface especificada
@@ -77,42 +85,63 @@ def update_history():
         time.sleep(30)  # Intervalo para capturar histórico
 
 # Função para manipular requisições SNMP
-def handle_snmp_request(command, oid):
+# Função para manipular requisições SNMP
+def handle_snmp_request(command, oid, value=None):
     with data_lock:
+        # etherStatsTable handling
         if oid.startswith(BASE_OID + ".1.1.1"):  # etherStatsTable
             mac_list = list(etherStatsTable.keys())
             parts = oid.split(".")
             if len(parts) > len(BASE_OID.split(".")) + 2:  # Verifica índice e coluna
                 column = parts[-2]
-                index = int(parts[-1]) - 1  # O índice SNMP começa em 1
+                try:
+                    index = int(parts[-1]) - 1  # O índice SNMP começa em 1
+                except ValueError:
+                    logging.error(f"Índice inválido no OID: {oid}")
+                    return None
+
                 if column in etherStatsColumns and 0 <= index < len(mac_list):
                     mac = mac_list[index]
                     if command == "GET":
+                        # Retorna o valor da coluna especificada
                         return "integer", etherStatsTable[mac][etherStatsColumns[column]]
-                    elif command == "GET-NEXT":
-                        next_index = index + 1
-                        if next_index < len(mac_list):
-                            next_oid = f"{BASE_OID}.1.1.1.{column}.{next_index + 1}"
-                            next_mac = mac_list[next_index]
-                            return next_oid, "integer", etherStatsTable[next_mac][etherStatsColumns[column]]
-                        else:
-                            return None
-                elif command == "GET-NEXT" and 0 <= index < len(mac_list):
-                    next_column = str(int(column) + 1)
-                    if next_column in etherStatsColumns:
-                        next_oid = f"{BASE_OID}.1.1.1.{next_column}.1"
-                        return next_oid, "integer", etherStatsTable[mac_list[0]][etherStatsColumns[next_column]]
-            elif command == "GET-NEXT":  # Se não for um OID completo, retorna o primeiro
-                first_oid = f"{BASE_OID}.1.1.1.1.1"
-                first_mac = mac_list[0]
-                return first_oid, "integer", etherStatsTable[first_mac][etherStatsColumns["1"]]
-            
-        #return None
+                    elif command == "SET":
+                        try:
+                            etherStatsTable[mac][etherStatsColumns[column]] = int(value)
+                            etherStatsTable[mac]["manual_update"][etherStatsColumns[column]] = True  # Marca como manualmente alterado
+                            logging.info(f"SET realizado: OID={oid}, Valor={value}")
+                            return "DONE"
+                        except ValueError:
+                            logging.error(f"Valor inválido para SET: {value}")
+                            return "NONE"
+                elif command == "GET-NEXT":
+                    # Processa GET-NEXT para a próxima coluna
+                    try:
+                        next_column = str(int(column) + 1)
+                        if next_column in etherStatsColumns and 0 <= index < len(mac_list):
+                            mac = mac_list[index]
+                            next_oid = f"{BASE_OID}.1.1.1.{next_column}.{index + 1}"
+                            return next_oid, "integer", etherStatsTable[mac][etherStatsColumns[next_column]]
+                    except ValueError:
+                        logging.error(f"Erro ao calcular GET-NEXT para OID: {oid}")
+                        return None
+            elif command == "GET-NEXT":  # Se o OID não especifica coluna e índice
+                if mac_list:
+                    first_oid = f"{BASE_OID}.1.1.1.1.1"
+                    first_mac = mac_list[0]
+                    return first_oid, "integer", etherStatsTable[first_mac][etherStatsColumns["1"]]
+        
+        # etherHistoryTable handling
         if oid.startswith(BASE_OID + ".2.2.1"):  # etherHistoryTable
             parts = oid.split(".")
             if len(parts) > len(BASE_OID.split(".")) + 2:  # Verifica índice e coluna
                 column = parts[-2]
-                index = int(parts[-1]) - 1  # O índice SNMP começa em 1
+                try:
+                    index = int(parts[-1]) - 1  # O índice SNMP começa em 1
+                except ValueError:
+                    logging.error(f"Índice inválido no OID: {oid}")
+                    return None
+
                 if column in etherHistoryColumns and 0 <= index < len(etherHistoryTable):
                     history_entry = etherHistoryTable[index]
                     if command == "GET":
@@ -131,12 +160,17 @@ def handle_snmp_request(command, oid):
                                 return next_oid, "integer", int(next_entry["timestamp"])
                         else:
                             return None
-            elif command == "GET-NEXT":  # Se não for um OID completo, retorna o primeiro
-                if etherHistoryTable:  # Verifica se o histórico tem entradas
+            elif command == "GET-NEXT":  # Se o OID não especifica coluna e índice
+                if etherHistoryTable:  # Verifica se há entradas no histórico
                     first_oid = f"{BASE_OID}.2.2.1.1.1"
                     first_entry = etherHistoryTable[0]
                     return first_oid, "integer", int(first_entry["timestamp"])
-            return None
+
+        # Caso o OID não seja encontrado
+        logging.warning(f"OID não suportado: {oid}")
+        return None
+
+
         
 
 # Função para responder a comandos do método pass_persist
@@ -172,11 +206,13 @@ def pass_persist_handler():
             elif line == "set":
                 oid = sys.stdin.readline().strip()
                 value = sys.stdin.readline().strip()
-                with data_lock:
-                    # Lógica de SET pode ser personalizada
-                    logging.info(f"SET recebido para OID {oid} com valor {value}")
-                print("DONE")
+                result = handle_snmp_request("SET", oid, value)
+                if result:
+                    print("DONE")
+                else:
+                    print("NONE")
                 sys.stdout.flush()
+
             else:
                 print("NONE")
                 sys.stdout.flush()
